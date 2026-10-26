@@ -99,6 +99,12 @@ A local-first MVP to turn observed corrections and task outcomes into **proposed
 
 Current limitation: this is the evidence/store/gate layer, not yet an automatic importer of Hermes session history or an automatic runner of the active Hermes model. The integration prompt requires an audit of the installed Hermes version before wiring either path.
 
+### Practical Acer Rescue runbook
+
+- [Acer Rescue: USB, physical boot, Tailscale + SSH](docs/runbooks/ACER-RESCUE-USB-AND-SSH-RU.md) — current step-by-step operational runbook; if the USB has already been written, do not rewrite it by default.
+- [Prompt to sync into JetBrains, Obsidian, and GBrain](docs/HERMES-RUNBOOK-SYNC-PROMPT-RU.md) — local Hermes instructions to place the runbook in the project tree and Obsidian vault, update the existing indexes, verify checksums, and synchronize only the relevant files.
+- [Behavioral benchmark v1](benchmarks/hermes-learning-v1/README.md) — concrete pass/fail cases for honest execution evidence, USB safety, context troubleshooting, and measured learning.
+
 ## License
 
 MIT — © 2026 Nous Research
