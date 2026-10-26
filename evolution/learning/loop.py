@@ -171,6 +171,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         "event_id": uuid.uuid4().hex,
         "created_at": utc_now(),
         "task_class": safe_text(args.task_class, 120),
+        "namespace": safe_text(args.namespace, 200),
         "outcome": args.outcome,
         "summary": safe_text(args.summary),
         "lesson": safe_text(args.lesson or "", 2000),
@@ -180,6 +181,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         "profile": safe_text(args.profile or "", 120),
         "model_id": safe_text(args.model_id or "", 160),
     }
+    if not record["namespace"]:
+        raise LearningError("An explicit namespace is required, e.g. project:acer-rescue-usb; avoid global memory by default.")
     if not record["summary"]:
         raise LearningError("A concise summary is required; do not store a raw transcript.")
     append_jsonl(store / "events.jsonl", record)
@@ -196,7 +199,8 @@ def cmd_propose(args: argparse.Namespace) -> int:
     store = args.store
     ensure_store(store)
     events = load_jsonl(store / "events.jsonl")
-    known = {event.get("event_id") for event in events}
+    events_by_id = {event.get("event_id"): event for event in events}
+    known = set(events_by_id)
     source_ids = sorted(set(args.source_event))
     missing = [event_id for event_id in source_ids if event_id not in known]
     if not source_ids or missing:
@@ -204,6 +208,9 @@ def cmd_propose(args: argparse.Namespace) -> int:
             "A proposal needs existing source event IDs. "
             + (f"Unknown IDs: {', '.join(missing)}" if missing else "")
         )
+    source_namespaces = {str(events_by_id[event_id].get("namespace", "")) for event_id in source_ids}
+    if len(source_namespaces) != 1 or not next(iter(source_namespaces), ""):
+        raise LearningError("A candidate must be scoped to one non-empty namespace; do not merge learnings across projects.")
     if not args.test_case:
         raise LearningError("Add at least one regression test-case ID before proposing a candidate.")
     candidate_id = slugify(args.title)
@@ -212,6 +219,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
         "candidate_id": candidate_id,
         "created_at": utc_now(),
         "status": "proposed",
+        "namespace": next(iter(source_namespaces)),
         "title": safe_text(args.title, 200),
         "trigger": safe_text(args.trigger, 500),
         "instruction": safe_text(args.instruction, 3000),
@@ -235,12 +243,15 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
 
 def validate_run(run: dict[str, Any], label: str, min_repeats: int, min_cases: int) -> dict[tuple[str, int], dict[str, Any]]:
-    required = ("schema_version", "suite_id", "model_id", "environment_id", "artifact_path", "artifact_sha256", "candidate_id", "cases")
+    required = ("schema_version", "suite_id", "condition", "model_id", "environment_id", "artifact_path", "artifact_sha256", "candidate_id", "cases")
     missing = [field for field in required if field not in run]
     if missing:
         raise LearningError(f"{label} run is missing required fields: {', '.join(missing)}")
     if run["schema_version"] != SCHEMA_VERSION:
         raise LearningError(f"{label} run schema_version must be {SCHEMA_VERSION}")
+    expected_condition = "warm" if label == "baseline" else "warm_plus_learning"
+    if run["condition"] != expected_condition:
+        raise LearningError(f"{label} condition must be {expected_condition!r}; compare against a warm baseline, not a cold run")
     artifact_path = Path(str(run["artifact_path"])).expanduser()
     if not artifact_path.is_file():
         raise LearningError(f"{label} artifact file does not exist: {artifact_path}")
@@ -329,6 +340,8 @@ def cmd_gate(args: argparse.Namespace) -> int:
         failures.append("environment_id differs; this is not a controlled comparison")
     if baseline["candidate_id"] != "baseline":
         failures.append("baseline run must use candidate_id='baseline'")
+    if baseline.get("condition") != "warm" or candidate_run.get("condition") != "warm_plus_learning":
+        failures.append("comparison must be warm baseline vs warm_plus_learning, not cold vs candidate")
     if candidate_run["candidate_id"] != args.candidate_id:
         failures.append("candidate run candidate_id does not match the proposal")
     if str(baseline.get("artifact_sha256", "")).lower() == str(candidate_run.get("artifact_sha256", "")).lower():
@@ -410,6 +423,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
         "human_approval_required": True,
         "suite_id": baseline.get("suite_id"),
         "model_id": baseline.get("model_id"),
+        "condition": {"baseline": baseline.get("condition"), "candidate": candidate_run.get("condition")},
         "environment_id": baseline.get("environment_id"),
         "baseline_artifact_sha256": baseline.get("artifact_sha256"),
         "candidate_artifact_sha256": candidate_run.get("artifact_sha256"),
@@ -494,6 +508,8 @@ def cmd_context(args: argparse.Namespace) -> int:
         playbook = load_json(path)
         if playbook.get("status") != "accepted" or not playbook.get("approved_by") or not playbook.get("gate_report_sha256"):
             continue
+        if playbook.get("namespace") != args.namespace:
+            continue
         searchable = " ".join([
             str(playbook.get("title", "")),
             str(playbook.get("trigger", "")),
@@ -538,6 +554,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     record = sub.add_parser("record", help="Record one concise observed outcome.")
     record.add_argument("--task-class", default="general")
+    record.add_argument("--namespace", required=True, help="Exact memory namespace, e.g. project:acer-rescue-usb")
     record.add_argument("--outcome", required=True, choices=sorted(OUTCOMES))
     record.add_argument("--summary", required=True, help="Short factual summary, not a raw transcript.")
     record.add_argument("--lesson", default="")
@@ -575,6 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     context = sub.add_parser("context", help="Retrieve a bounded set of accepted playbooks for a task.")
     context.add_argument("--task", required=True)
+    context.add_argument("--namespace", required=True, help="Only retrieve learnings from this exact namespace")
     context.add_argument("--max-chars", type=int, default=3000)
     context.set_defaults(func=cmd_context)
     return parser
