@@ -235,12 +235,20 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
 
 def validate_run(run: dict[str, Any], label: str, min_repeats: int, min_cases: int) -> dict[tuple[str, int], dict[str, Any]]:
-    required = ("schema_version", "suite_id", "model_id", "environment_id", "artifact_sha256", "candidate_id", "cases")
+    required = ("schema_version", "suite_id", "model_id", "environment_id", "artifact_path", "artifact_sha256", "candidate_id", "cases")
     missing = [field for field in required if field not in run]
     if missing:
         raise LearningError(f"{label} run is missing required fields: {', '.join(missing)}")
     if run["schema_version"] != SCHEMA_VERSION:
         raise LearningError(f"{label} run schema_version must be {SCHEMA_VERSION}")
+    artifact_path = Path(str(run["artifact_path"])).expanduser()
+    if not artifact_path.is_file():
+        raise LearningError(f"{label} artifact file does not exist: {artifact_path}")
+    actual_artifact_hash = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    if actual_artifact_hash != str(run["artifact_sha256"]).lower():
+        raise LearningError(f"{label} artifact SHA-256 does not match the actual file")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(run["artifact_sha256"]).lower()):
+        raise LearningError(f"{label} artifact_sha256 must be a 64-character SHA-256 hex digest")
     if not isinstance(run["cases"], list) or not run["cases"]:
         raise LearningError(f"{label} run must contain a non-empty 'cases' array")
     mapped: dict[tuple[str, int], dict[str, Any]] = {}
@@ -249,7 +257,7 @@ def validate_run(run: dict[str, Any], label: str, min_repeats: int, min_cases: i
     for index, item in enumerate(run["cases"]):
         if not isinstance(item, dict):
             raise LearningError(f"{label} cases[{index}] must be an object")
-        for field in ("case_id", "repeat", "passed", "safety_passed"):
+        for field in ("case_id", "repeat", "passed", "safety_passed", "evidence_path", "evidence_sha256"):
             if field not in item:
                 raise LearningError(f"{label} cases[{index}] missing {field}")
         case_id = str(item["case_id"])
@@ -261,6 +269,14 @@ def validate_run(run: dict[str, Any], label: str, min_repeats: int, min_cases: i
             raise LearningError(f"{label} cases[{index}] has invalid case_id/repeat")
         if not isinstance(item["passed"], bool) or not isinstance(item["safety_passed"], bool):
             raise LearningError(f"{label} cases[{index}] passed/safety_passed must be booleans")
+        evidence_path = Path(str(item["evidence_path"])).expanduser()
+        if not evidence_path.is_file():
+            raise LearningError(f"{label} evidence file does not exist for {case_id} repeat {repeat}: {evidence_path}")
+        actual_evidence_hash = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        if actual_evidence_hash != str(item["evidence_sha256"]).lower():
+            raise LearningError(f"{label} evidence SHA-256 mismatch for {case_id} repeat {repeat}")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(item["evidence_sha256"]).lower()):
+            raise LearningError(f"{label} evidence_sha256 must be a 64-character SHA-256 hex digest")
         key = (case_id, repeat)
         if key in mapped:
             raise LearningError(f"{label} has duplicate case_id/repeat row: {key}")
@@ -315,6 +331,8 @@ def cmd_gate(args: argparse.Namespace) -> int:
         failures.append("baseline run must use candidate_id='baseline'")
     if candidate_run["candidate_id"] != args.candidate_id:
         failures.append("candidate run candidate_id does not match the proposal")
+    if str(baseline.get("artifact_sha256", "")).lower() == str(candidate_run.get("artifact_sha256", "")).lower():
+        failures.append("candidate artifact hash equals baseline; no distinct artifact was evaluated")
     if set(base_rows) != set(cand_rows):
         failures.append("baseline and candidate case/repeat rows do not match")
     source_ids = set(proposal.get("source_event_ids", []))
@@ -395,6 +413,21 @@ def cmd_gate(args: argparse.Namespace) -> int:
         "environment_id": baseline.get("environment_id"),
         "baseline_artifact_sha256": baseline.get("artifact_sha256"),
         "candidate_artifact_sha256": candidate_run.get("artifact_sha256"),
+        "artifacts": {
+            "baseline": baseline.get("artifact_path"),
+            "candidate": candidate_run.get("artifact_path"),
+        },
+        "evidence_files": [
+            {
+                "case_id": case_id,
+                "repeat": repeat,
+                "baseline_path": base_rows[(case_id, repeat)].get("evidence_path"),
+                "baseline_sha256": base_rows[(case_id, repeat)].get("evidence_sha256"),
+                "candidate_path": cand_rows[(case_id, repeat)].get("evidence_path"),
+                "candidate_sha256": cand_rows[(case_id, repeat)].get("evidence_sha256"),
+            }
+            for case_id, repeat in common_keys
+        ],
         "observations": len(common_keys),
         "unique_cases": len({key[0] for key in common_keys}),
         "repeats": sorted({key[1] for key in common_keys}),
