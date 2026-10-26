@@ -54,6 +54,7 @@ python -m evolution.learning.loop init
 # Зафиксировать короткий результат/исправление, не копируя транскрипт
 python -m evolution.learning.loop record \
   --task-class "project-work" \
+  --namespace "project:acer-rescue-usb" \
   --outcome corrected \
   --summary "Агент заявил, что проверка прошла, но не выполнил саму команду" \
   --correction "PASS возможен только с фактической командой, выводом и exit code" \
@@ -84,6 +85,7 @@ python -m evolution.learning.loop accept \
 
 # Получить до 3000 символов проверенных правил для текущей задачи:
 python -m evolution.learning.loop context \
+  --namespace "project:acer-rescue-usb" \
   --task "проверка тестов и отчёт с доказательствами" --max-chars 3000
 ```
 
@@ -97,6 +99,7 @@ python -m evolution.learning.loop context \
 {
   "schema_version": 1,
   "suite_id": "hermes-regression-v1",
+  "condition": "warm",
   "model_id": "local:stable-model-alias",
   "environment_id": "hermes-version-and-runtime-fingerprint",
   "artifact_path": "/local/private/path/to/instruction.md",
@@ -118,7 +121,7 @@ python -m evolution.learning.loop context \
 }
 ```
 
-Для первого локального gate нужно не меньше пяти уникальных case ID и трёх повторов на каждый case для baseline и candidate. В обоих receipts должны совпадать suite, модель, runtime/environment и набор пар (case_id, repeat). Baseline использует `candidate_id: "baseline"`; candidate — ID соответствующего предложения. Подставьте фактические SHA-256 и метрики.
+Для первого локального gate нужно не меньше пяти уникальных case ID и трёх повторов на каждый case для baseline и candidate. Baseline обязан иметь `condition: "warm"`, а candidate — `condition: "warm_plus_learning"`: измеряем добавочную пользу поверх обычного повторного запуска, а не только преимущество над cold-run. В обоих receipts должны совпадать suite, модель, runtime/environment и набор пар (case_id, repeat). Baseline использует `candidate_id: "baseline"`; candidate — ID соответствующего предложения. Пути к тестируемому файлу и evidence должны существовать; CLI проверяет их фактические SHA-256. Подставляй реальные метрики и evidence из выполнения, не из самоотчёта модели.
 
 При принятии решения:
 - немедленно отклоняется любой candidate, у которого есть safety failure;
@@ -135,7 +138,7 @@ python -m evolution.learning.loop context \
 1. Уроки, собранные из пользовательских сессий, хранятся локально. Не коммить `events.jsonl`, профильные данные, исходные сессии, MEMORY.md/USER.md, токены и реальные конфиги.
 2. Перед записью события отправляй краткое обобщение; не вставляй полный транскрипт. Маскирование частых API-токенов — только защита в глубину, а не гарантированная очистка персональных данных.
 3. Кандидат не попадает в retrieval до gate PASS **и** явного `accept --approved-by`.
-4. `accept` добавляет кандидат в локальный approved store, но не меняет автоматически active SOUL.md/SKILL.md. Интеграцию с текущим Hermes нужно отдельно проверить на реальной версии CLI.
+4. `accept` добавляет кандидат в локальный approved store, но не меняет автоматически active SOUL.md/SKILL.md. Интеграцию с текущим Hermes нужно отдельно проверить на реальной версии CLI. Ключ/флаг `--approved-by` — аудиторская отметка процесса, а не криптографическая граница доверия против агента с прямым shell/filesystem-доступом. На этом этапе acceptance должен выполнять владелец, а не автономный worker.
 5. Для текущего компьютера не добавлять тяжёлую модель или hosted API только ради self-improvement. В первой интеграции не менять работающую модель/endpoint или голосовой ввод/вывод.
 6. Ремонт USB/дисков, системные изменения и опасные команды — отдельный класс задач. Успешная запись урока не даёт разрешение повторить действие и не заменяет явного одобрения разрушительной операции.
 7. LLM-as-judge может давать аналитический feedback, но не является единственным критерием принятия. Использовать детерминированные проверки, логи, exit codes и человеческую проверку там, где нельзя формализовать успех.
