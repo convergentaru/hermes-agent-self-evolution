@@ -220,45 +220,69 @@ def test_equal_quality_requires_measured_efficiency_improvement(tmp_path, capsys
     assert report["decision"] == "NO_DEMONSTRATED_IMPROVEMENT"
 
 
-def test_context_retrieves_accepted_playbook_only_and_respects_char_cap(tmp_path, capsys):
+def test_context_retrieves_only_verified_playbooks_in_exact_namespace_and_char_cap(tmp_path, capsys):
     store = tmp_path / "store"
     ensure_store(store)
     event_id = record_event(store)
     candidate_id = proposal(store, event_id)
-    accepted = {
-        "schema_version": 1,
-        "candidate_id": candidate_id,
-        "status": "accepted",
-        "namespace": "project:learning-loop-tests",
-        "title": "Test evidence verification",
-        "trigger": "When reporting tests and verification",
-        "instruction": "Require a real test command and exit code.",
-        "source_event_ids": [event_id],
-        "tags": ["tests", "verification"],
-        "approved_by": "owner-review",
-        "gate_report_sha256": "c" * 64,
-    }
-    (store / "accepted" / f"{candidate_id}.json").write_text(json.dumps(accepted))
-    (store / "accepted" / "unrelated-namespace.json").write_text(json.dumps({
-        "schema_version": 1,
-        "candidate_id": "unrelated-namespace",
-        "status": "accepted",
-        "namespace": "project:acer-rescue-usb",
-        "title": "Test evidence verification for unrelated USB work",
-        "trigger": "When reporting tests verification",
-        "instruction": "This unrelated namespace must never appear in this context.",
-        "source_event_ids": [event_id],
-        "tags": ["tests", "verification"],
-        "approved_by": "owner-review",
-        "gate_report_sha256": "d" * 64,
+    capsys.readouterr()  # discard expected event/proposal JSON
+
+    baseline_path = write_run(
+        tmp_path / "baseline.json",
+        make_run(tmp_path, "baseline", all_pass=False, steps=12),
+    )
+    candidate_path = write_run(
+        tmp_path / "candidate.json",
+        make_run(tmp_path, candidate_id, all_pass=True, steps=12),
+    )
+    code = cmd_gate(ns(
+        store=store, candidate_id=candidate_id,
+        baseline=baseline_path, candidate_run=candidate_path,
+        min_cases=5, min_repeats=3, min_efficiency_gain=0.10,
+    ))
+    report = json.loads(capsys.readouterr().out)
+    assert code == 0
+    gate_path = Path(report["report_path"])
+    cmd_accept(ns(
+        store=store, candidate_id=candidate_id,
+        gate_report=gate_path, approved_by="owner-review",
+    ))
+    capsys.readouterr()
+
+    # Plausibly labelled JSON is not enough: unverified playbooks stay hidden.
+    (store / "accepted" / "fake-same-namespace.json").write_text(json.dumps({
+        "schema_version": 1, "candidate_id": "fake-same-namespace",
+        "status": "accepted", "namespace": "project:learning-loop-tests",
+        "title": "Verification tests", "trigger": "When reporting tests",
+        "instruction": "UNVERIFIED PLAYBOOK MUST NOT BE IN CONTEXT",
+        "source_event_ids": [event_id], "tags": ["tests", "verification"],
+        "approved_by": "owner-review", "gate_report_sha256": "d" * 64,
+        "gate_report_path": str(tmp_path / "does-not-exist.json"),
     }))
-    cmd_context(ns(store=store, namespace="project:learning-loop-tests", task="report tests verification", max_chars=1000))
+    (store / "accepted" / "unrelated-namespace.json").write_text(json.dumps({
+        "schema_version": 1, "candidate_id": "unrelated-namespace",
+        "status": "accepted", "namespace": "project:acer-rescue-usb",
+        "title": "Verification tests for USB", "trigger": "When reporting tests",
+        "instruction": "UNRELATED NAMESPACE MUST NOT BE IN CONTEXT",
+        "source_event_ids": [event_id], "tags": ["tests", "verification"],
+        "approved_by": "owner-review", "gate_report_sha256": "e" * 64,
+        "gate_report_path": str(tmp_path / "also-missing.json"),
+    }))
+
+    cmd_context(ns(
+        store=store, namespace="project:learning-loop-tests",
+        task="report tests verification", max_chars=1000,
+    ))
     output = capsys.readouterr().out
     assert "Require a real test command" in output
     assert "accepted playbook(s)" in output
-    assert "unrelated namespace must never appear" not in output
+    assert "UNVERIFIED PLAYBOOK MUST NOT BE IN CONTEXT" not in output
+    assert "UNRELATED NAMESPACE MUST NOT BE IN CONTEXT" not in output
 
-    # Proposed candidates are never loaded into context.
+    # Once the only gate-backed playbook is removed, neither decoy is retrievable.
     (store / "accepted" / f"{candidate_id}.json").unlink()
-    cmd_context(ns(store=store, namespace="project:learning-loop-tests", task="report tests verification", max_chars=1000))
+    cmd_context(ns(
+        store=store, namespace="project:learning-loop-tests",
+        task="report tests verification", max_chars=1000,
+    ))
     assert "No accepted playbooks matched" in capsys.readouterr().out
