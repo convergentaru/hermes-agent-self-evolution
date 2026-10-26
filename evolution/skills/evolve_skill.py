@@ -132,7 +132,7 @@ def evolve(
     # ── 3. Validate constraints on baseline ─────────────────────────────
     console.print(f"\n[bold]Validating baseline constraints[/bold]")
     validator = ConstraintValidator(config)
-    baseline_constraints = validator.validate_all(skill["body"], "skill")
+    baseline_constraints = validator.validate_all(skill["raw"], "skill")
     all_pass = True
     for c in baseline_constraints:
         icon = "✓" if c.passed else "✗"
@@ -210,7 +210,7 @@ def evolve(
 
     # ── 7. Validate evolved skill ───────────────────────────────────────
     console.print(f"\n[bold]Validating evolved skill[/bold]")
-    evolved_constraints = validator.validate_all(evolved_body, "skill", baseline_text=skill["body"])
+    evolved_constraints = validator.validate_all(evolved_full, "skill", baseline_text=skill["raw"])
     all_pass = True
     for c in evolved_constraints:
         icon = "✓" if c.passed else "✗"
@@ -227,6 +227,22 @@ def evolve(
         output_path.write_text(evolved_full)
         console.print(f"  Saved failed variant to {output_path}")
         return
+
+    if run_tests:
+        console.print("\n[bold]Running requested Hermes test-suite gate[/bold]")
+        test_result = validator.run_test_suite(config.hermes_agent_path)
+        icon = "✓" if test_result.passed else "✗"
+        console.print(f"  {icon} {test_result.constraint_name}: {test_result.message}")
+        if test_result.details:
+            console.print(test_result.details)
+        if not test_result.passed:
+            output_path = Path("output") / skill_name / "evolved_FAILED.md"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(evolved_full)
+            console.print(
+                f"[red]Test gate failed; candidate kept for inspection at {output_path}[/red]"
+            )
+            return
 
     # ── 8. Evaluate on holdout set ──────────────────────────────────────
     console.print(f"\n[bold]Evaluating on holdout set ({len(dataset.holdout)} examples)[/bold]")
