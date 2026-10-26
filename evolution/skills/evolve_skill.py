@@ -6,6 +6,7 @@ Usage:
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -35,7 +36,7 @@ console = Console()
 
 def evolve(
     skill_name: str,
-    iterations: int = 10,
+    max_metric_calls: int = 40,
     eval_source: str = "synthetic",
     dataset_path: Optional[str] = None,
     optimizer_model: str = "openai/gpt-4.1",
@@ -43,16 +44,26 @@ def evolve(
     hermes_repo: Optional[str] = None,
     run_tests: bool = False,
     dry_run: bool = False,
+    api_base: Optional[str] = None,
+    api_key_env: Optional[str] = "OPENAI_API_KEY",
+    num_threads: int = 1,
 ):
     """Main evolution function — orchestrates the full optimization loop."""
 
+    api_key = os.environ.get(api_key_env) if api_key_env else None
+    if api_base and not api_key:
+        # Local OpenAI-compatible endpoints such as llama.cpp normally do not
+        # authenticate, but OpenAI-compatible clients may require a non-empty key.
+        api_key = "local-no-auth"
+
     config = EvolutionConfig(
         hermes_agent_path=resolve_hermes_agent_path(hermes_repo),
-        iterations=iterations,
         optimizer_model=optimizer_model,
         eval_model=eval_model,
         judge_model=eval_model,  # Use same model for dataset generation
         run_pytest=run_tests,
+        api_base=api_base,
+        api_key=api_key,
     )
 
     # ── 1. Find and load the skill ──────────────────────────────────────
@@ -72,7 +83,8 @@ def evolve(
     if dry_run:
         console.print(f"\n[bold green]DRY RUN — setup validated successfully.[/bold green]")
         console.print(f"  Would generate eval dataset (source: {eval_source})")
-        console.print(f"  Would run GEPA optimization ({iterations} iterations)")
+        console.print(f"  Would run GEPA optimization (budget: {max_metric_calls} metric calls)")
+        console.print("  GEPA is mandatory; no fallback optimizer will be substituted.")
         console.print(f"  Would validate constraints and create PR")
         return
 
@@ -90,6 +102,8 @@ def evolve(
             sources=["claude-code", "copilot", "hermes"],
             output_path=save_path,
             model=eval_model,
+            api_base=api_base,
+            api_key=api_key,
         )
         if not dataset.all_examples:
             console.print("[red]✗ No relevant examples found from session history[/red]")
