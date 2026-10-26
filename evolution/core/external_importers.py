@@ -442,9 +442,16 @@ class RelevanceFilter:
         assistant_response: str = dspy.InputField(desc="The assistant's actual response (may be empty)")
         scoring: str = dspy.OutputField(desc="JSON object with: relevant, expected_behavior, difficulty, category")
 
-    def __init__(self, model: str):
+    def __init__(
+        self,
+        model: str,
+        api_base: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ):
         self.scorer = dspy.ChainOfThought(self.ScoreRelevance)
         self.model = model
+        self.api_base = api_base
+        self.api_key = api_key
 
     def filter_and_score(
         self,
@@ -490,7 +497,13 @@ class RelevanceFilter:
         # Stage 2: LLM relevance scoring
         examples = []
         errors = 0
-        lm = dspy.LM(self.model)
+        lm_kwargs = {}
+        if self.api_base:
+            lm_kwargs["api_base"] = self.api_base
+            lm_kwargs["api_key"] = self.api_key or "local-no-auth"
+        elif self.api_key:
+            lm_kwargs["api_key"] = self.api_key
+        lm = dspy.LM(self.model, **lm_kwargs)
 
         with Progress() as progress:
             task = progress.add_task("Scoring relevance...", total=len(candidates))
@@ -610,6 +623,8 @@ def build_dataset_from_external(
     output_path: Path,
     model: str,
     max_examples: int = 50,
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> EvalDataset:
     """Extract messages from external tools, filter for relevance, and save.
 
@@ -651,7 +666,11 @@ def build_dataset_from_external(
     console.print(f"\n[bold]Total messages: {len(all_messages)}[/bold]")
     console.print(f"[bold]Filtering for relevance to skill: {skill_name}[/bold]")
 
-    relevance_filter = RelevanceFilter(model=model)
+    relevance_filter = RelevanceFilter(
+        model=model,
+        api_base=api_base,
+        api_key=api_key,
+    )
     examples = relevance_filter.filter_and_score(
         all_messages, skill_name, skill_text, max_examples=max_examples,
     )
