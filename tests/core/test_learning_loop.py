@@ -279,7 +279,7 @@ def test_context_retrieves_only_verified_playbooks_in_exact_namespace_and_char_c
     ))
     output = capsys.readouterr().out
     assert "Report PASS only when the actual test command and exit code are recorded." in output
-    assert "accepted playbook(s)" in output
+    assert "approved playbook(s)" in output
     assert "UNVERIFIED PLAYBOOK MUST NOT BE IN CONTEXT" not in output
     assert "UNRELATED NAMESPACE MUST NOT BE IN CONTEXT" not in output
 
