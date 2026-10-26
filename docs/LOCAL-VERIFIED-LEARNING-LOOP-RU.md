@@ -6,7 +6,7 @@
 ## Что показали исходные материалы
 
 - [Reflexio](https://github.com/ReflexioAI/reflexio) показывает полезный паттерн: сохранять пользовательские коррекции и успешные процедуры в виде извлекаемых playbooks, отделять персональные сведения от общих правил и измерять добавочную пользу на фоне уже обучающегося агента.
-- Их [GDPVal results](https://github.com/ReflexioAI/reflexio/blob/main/benchmark/gdpval/RESULTS.md) сравнивают Cold → Warm → Warm + Reflexio. В README заявлены результаты на пяти задачах, из которых четыре дали положительный эффект; в текущем отчёте более подробно раскрыты маленькая выборка, отбор задач и пределы применимости. Это интересная репликация авторов проекта, но не независимое подтверждение универсального улучшения.
+- Их [GDPVal results](https://github.com/ReflexioAI/reflexio/blob/main/benchmark/gdpval/RESULTS.md) сравнивают Cold → Warm → Warm + Reflexio. В детальном `RESULTS.md` указано: четыре из пяти выбранных задач улучшились; медианное снижение на семи квалифицируемых host-измерениях — 50% шагов и 57% токенов против warm baseline. При этом headline в README Reflexio показывает −81% шагов / −72% токенов. Это несоответствие между кратким README и подробно расписанной текущей таблицей нельзя молча игнорировать; для наших выводов используем детальную таблицу и методологические ограничения. Это собственный эксперимент авторов проекта, а не независимое подтверждение универсального улучшения.
 - В обсуждении [benchmarks for self-improving agents](https://www.reddit.com/r/AI_Agents/comments/1slqhzu/are_there_any_benchmarks_for_selfimproving_agents/) участники отмечают, что benchmark памяти не равен benchmark улучшения поведения, и что самооценка LLM не заменяет проверку фактического результата.
 - [Вики r/AI_Agents](https://www.reddit.com/r/AI_Agents/wiki) — полезный список сообщества, но не нормативная спецификация и не доказательство качества конкретного подхода.
 
@@ -99,7 +99,8 @@ python -m evolution.learning.loop context \
   "suite_id": "hermes-regression-v1",
   "model_id": "local:stable-model-alias",
   "environment_id": "hermes-version-and-runtime-fingerprint",
-  "artifact_sha256": "sha256-of-tested-skill-or-instruction",
+  "artifact_path": "/local/private/path/to/instruction.md",
+  "artifact_sha256": "actual-sha256-of-tested-file",
   "candidate_id": "baseline",
   "cases": [
     {
@@ -107,6 +108,8 @@ python -m evolution.learning.loop context \
       "repeat": 1,
       "passed": true,
       "safety_passed": true,
+      "evidence_path": "/local/private/path/to/case-01-repeat-01.json",
+      "evidence_sha256": "actual-sha256-of-evidence-file",
       "steps": 4,
       "tokens": 850,
       "latency_ms": 2400
@@ -125,7 +128,7 @@ python -m evolution.learning.loop context \
 - при той же доле требуется как минимум 10% снижения среднего числа шагов, токенов или времени на общих успешных кейсах;
 - отсутствие improvement не превращается в PASS автоматически.
 
-Это детерминированные критерии обработки поданных receipts, а не statistical significance и не самостоятельная проверка логов. Результаты и артефакты должны быть просмотрены независимо. Для важных навыков увеличивать число кейсов/повторов.
+Это детерминированные критерии обработки поданных receipts: CLI проверяет существование и SHA-256 каждого tested artifact и evidence file. Но hash доказывает целостность файла, а не то, что агент честно выполнил описанный запуск. Сами evidence-файлы и логи необходимо проверить независимо; формат receipt не должен заполняться выдуманными показателями моделью. Эти критерии также не являются statistical significance. Для важных навыков увеличивать число кейсов/повторов.
 
 ## Границы безопасности и честности
 
