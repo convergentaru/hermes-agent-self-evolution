@@ -75,6 +75,15 @@ Every evolved variant must pass:
 4. **Semantic preservation** — Must not drift from original purpose
 5. **PR review** — All changes go through human review, never direct commit
 
+## Practical Masterclass Roadmap (RU)
+
+A Russian-language implementation plan based on Akshay Pachaar's public post and video:
+
+- [Implementation roadmap](docs/HERMES-AGENT-MASTERCLASS-ROADMAP-RU.md) — identity, memory, progressive skill loading, curator, evaluation, and gated evolution.
+- [Read-only skill audit tool](tools/audit_skills.py) — inventories SKILL.md files, hashes, oversized files, and exact duplicates without changing files.
+
+Sources: [X post](https://x.com/akshay_pachaar/status/2054564519280804028) · [YouTube crash course](https://www.youtube.com/watch?v=bNp6YcKBLgY)
+
 ## Full Plan
 
 See [PLAN.md](PLAN.md) for the complete architecture, evaluation data strategy, constraints, benchmarks integration, and phased timeline.
