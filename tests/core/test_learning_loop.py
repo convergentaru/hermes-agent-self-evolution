@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -59,30 +60,51 @@ def proposal(store: Path, event_id: str) -> str:
     return files[0].stem
 
 
-def make_run(candidate_id: str, *, all_pass: bool, fail_safety: bool = False, steps: int = 10):
+def make_run(tmp_path: Path, candidate_id: str, *, all_pass: bool, fail_safety: bool = False, steps: int = 10):
+    candidate_tag = "baseline" if candidate_id == "baseline" else "candidate"
+    artifact_path = tmp_path / f"{candidate_tag}-artifact.md"
+    artifact_path.write_text(f"# {candidate_tag} tested instruction\\n", encoding="utf-8")
+    artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    evidence_dir = tmp_path / f"{candidate_tag}-evidence"
+    evidence_dir.mkdir(exist_ok=True)
     cases = []
     for case_idx in range(1, 6):
         for repeat in range(1, 4):
             passed = all_pass or case_idx < 5
+            safety_passed = not (fail_safety and case_idx == 2 and repeat == 2)
+            evidence_path = evidence_dir / f"case-{case_idx}-repeat-{repeat}.json"
+            evidence = {
+                "case_id": f"case-{case_idx}",
+                "repeat": repeat,
+                "passed": passed,
+                "safety_passed": safety_passed,
+                "steps": steps,
+                "tokens": steps * 100,
+                "latency_ms": steps * 1000,
+                "source": "test fixture; real deployments must point to actual run evidence",
+            }
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
             cases.append({
                 "case_id": f"case-{case_idx}",
                 "repeat": repeat,
                 "passed": passed,
-                "safety_passed": not (fail_safety and case_idx == 2 and repeat == 2),
+                "safety_passed": safety_passed,
                 "steps": steps,
                 "tokens": steps * 100,
                 "latency_ms": steps * 1000,
+                "evidence_path": str(evidence_path),
+                "evidence_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
             })
     return {
         "schema_version": 1,
         "suite_id": "hermes-smoke-v1",
         "model_id": "local:stable-8b",
         "environment_id": "hermes-test-build-1",
-        "artifact_sha256": "a" * 64 if candidate_id == "baseline" else "b" * 64,
+        "artifact_path": str(artifact_path),
+        "artifact_sha256": artifact_sha256,
         "candidate_id": candidate_id,
         "cases": cases,
     }
-
 
 def write_run(path: Path, data: dict):
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -125,8 +147,8 @@ def test_gate_passes_only_with_improvement_and_human_approval_is_separate(tmp_pa
     ensure_store(store)
     event_id = record_event(store)
     candidate_id = proposal(store, event_id)
-    baseline_path = write_run(tmp_path / "baseline.json", make_run("baseline", all_pass=False, steps=12))
-    candidate_path = write_run(tmp_path / "candidate.json", make_run(candidate_id, all_pass=True, steps=12))
+    baseline_path = write_run(tmp_path / "baseline.json", make_run(tmp_path, "baseline", all_pass=False, steps=12))
+    candidate_path = write_run(tmp_path / "candidate.json", make_run(tmp_path, candidate_id, all_pass=True, steps=12))
     result_code = cmd_gate(ns(
         store=store,
         candidate_id=candidate_id,
@@ -163,10 +185,10 @@ def test_gate_rejects_safety_regression(tmp_path, capsys):
     ensure_store(store)
     event_id = record_event(store)
     candidate_id = proposal(store, event_id)
-    baseline_path = write_run(tmp_path / "baseline.json", make_run("baseline", all_pass=True, steps=12))
+    baseline_path = write_run(tmp_path / "baseline.json", make_run(tmp_path, "baseline", all_pass=True, steps=12))
     candidate_path = write_run(
         tmp_path / "candidate.json",
-        make_run(candidate_id, all_pass=True, fail_safety=True, steps=5),
+        make_run(tmp_path, candidate_id, all_pass=True, fail_safety=True, steps=5),
     )
     code = cmd_gate(ns(
         store=store, candidate_id=candidate_id,
@@ -184,8 +206,8 @@ def test_equal_quality_requires_measured_efficiency_improvement(tmp_path, capsys
     ensure_store(store)
     event_id = record_event(store)
     candidate_id = proposal(store, event_id)
-    baseline_path = write_run(tmp_path / "baseline.json", make_run("baseline", all_pass=True, steps=10))
-    candidate_path = write_run(tmp_path / "candidate.json", make_run(candidate_id, all_pass=True, steps=10))
+    baseline_path = write_run(tmp_path / "baseline.json", make_run(tmp_path, "baseline", all_pass=True, steps=10))
+    candidate_path = write_run(tmp_path / "candidate.json", make_run(tmp_path, candidate_id, all_pass=True, steps=10))
     code = cmd_gate(ns(
         store=store, candidate_id=candidate_id,
         baseline=baseline_path, candidate_run=candidate_path,
