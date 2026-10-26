@@ -480,6 +480,7 @@ def cmd_accept(args: argparse.Namespace) -> int:
         "accepted_at": utc_now(),
         "approved_by": safe_text(args.approved_by, 120),
         "gate_report_sha256": hashlib.sha256(args.gate_report.read_bytes()).hexdigest(),
+        "gate_report_path": str(args.gate_report.resolve()),
         "gate_decision": report["decision"],
     })
     target = store / "accepted" / f"{args.candidate_id}.json"
@@ -509,6 +510,26 @@ def cmd_context(args: argparse.Namespace) -> int:
         if playbook.get("status") != "accepted" or not playbook.get("approved_by") or not playbook.get("gate_report_sha256"):
             continue
         if playbook.get("namespace") != args.namespace:
+            continue
+        # An accepted JSON file is not sufficient: re-check the referenced gate receipt.
+        gate_path_value = playbook.get("gate_report_path")
+        if not gate_path_value:
+            continue
+        gate_path = Path(str(gate_path_value)).expanduser()
+        if not gate_path.is_file():
+            continue
+        try:
+            gate_bytes = gate_path.read_bytes()
+            gate_report = json.loads(gate_bytes.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if hashlib.sha256(gate_bytes).hexdigest() != playbook.get("gate_report_sha256"):
+            continue
+        if (
+            gate_report.get("decision") != "PASS"
+            or gate_report.get("promotion_allowed") is not True
+            or gate_report.get("candidate_id") != playbook.get("candidate_id")
+        ):
             continue
         searchable = " ".join([
             str(playbook.get("title", "")),
