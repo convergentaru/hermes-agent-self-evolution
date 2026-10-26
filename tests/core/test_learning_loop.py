@@ -118,6 +118,7 @@ def test_record_redacts_common_tokens_and_keeps_local_store_private(tmp_path, ca
     cmd_record(ns(
         store=store,
         task_class="general",
+        namespace="test:redaction",
         outcome="failed",
         summary="Encountered credential sk-abcdefghijklmnopqrstu while testing",
         lesson="Keep it local",
@@ -149,6 +150,7 @@ def test_gate_passes_only_with_improvement_and_human_approval_is_separate(tmp_pa
     ensure_store(store)
     event_id = record_event(store)
     candidate_id = proposal(store, event_id)
+    capsys.readouterr()  # isolate gate output from event and proposal records
     baseline_path = write_run(tmp_path / "baseline.json", make_run(tmp_path, "baseline", all_pass=False, steps=12))
     candidate_path = write_run(tmp_path / "candidate.json", make_run(tmp_path, candidate_id, all_pass=True, steps=12))
     result_code = cmd_gate(ns(
@@ -187,6 +189,7 @@ def test_gate_rejects_safety_regression(tmp_path, capsys):
     ensure_store(store)
     event_id = record_event(store)
     candidate_id = proposal(store, event_id)
+    capsys.readouterr()  # isolate gate output from event and proposal records
     baseline_path = write_run(tmp_path / "baseline.json", make_run(tmp_path, "baseline", all_pass=True, steps=12))
     candidate_path = write_run(
         tmp_path / "candidate.json",
@@ -208,6 +211,7 @@ def test_equal_quality_requires_measured_efficiency_improvement(tmp_path, capsys
     ensure_store(store)
     event_id = record_event(store)
     candidate_id = proposal(store, event_id)
+    capsys.readouterr()  # isolate gate output from event and proposal records
     baseline_path = write_run(tmp_path / "baseline.json", make_run(tmp_path, "baseline", all_pass=True, steps=10))
     candidate_path = write_run(tmp_path / "candidate.json", make_run(tmp_path, candidate_id, all_pass=True, steps=10))
     code = cmd_gate(ns(
@@ -274,7 +278,7 @@ def test_context_retrieves_only_verified_playbooks_in_exact_namespace_and_char_c
         task="report tests verification", max_chars=1000,
     ))
     output = capsys.readouterr().out
-    assert "Require a real test command" in output
+    assert "Report PASS only when the actual test command and exit code are recorded." in output
     assert "accepted playbook(s)" in output
     assert "UNVERIFIED PLAYBOOK MUST NOT BE IN CONTEXT" not in output
     assert "UNRELATED NAMESPACE MUST NOT BE IN CONTEXT" not in output
