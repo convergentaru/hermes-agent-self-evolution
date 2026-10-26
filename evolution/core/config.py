@@ -25,6 +25,11 @@ class EvolutionConfig:
     eval_model: str = "openai/gpt-4.1-mini"  # Model for LLM-as-judge scoring
     judge_model: str = "openai/gpt-4.1"  # Model for dataset generation
 
+    # Optional OpenAI-compatible endpoint. Use for a local llama.cpp server.
+    # api_key is loaded from the environment by the CLI and is never printed.
+    api_base: Optional[str] = None
+    api_key: Optional[str] = field(default=None, repr=False)
+
     # Constraints
     max_skill_size: int = 15_000  # 15KB default
     max_tool_desc_size: int = 500  # chars
@@ -45,6 +50,23 @@ class EvolutionConfig:
     # Output
     output_dir: Path = field(default_factory=lambda: Path("./output"))
     create_pr: bool = True
+
+    def make_lm(self, model_name: str):
+        """Create a DSPy LM using the configured provider or OpenAI-compatible API.
+
+        When api_base points to a local server without authentication, a harmless
+        placeholder key is supplied because OpenAI-compatible clients commonly
+        require a non-empty value. Real keys must come from environment variables.
+        """
+        import dspy
+
+        kwargs = {}
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+            kwargs["api_key"] = self.api_key or "local-no-auth"
+        elif self.api_key:
+            kwargs["api_key"] = self.api_key
+        return dspy.LM(model_name, **kwargs)
 
 
 def _discover_hermes_agent_path() -> Optional[Path]:
