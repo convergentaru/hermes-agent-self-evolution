@@ -32,6 +32,7 @@ def record_event(store: Path, outcome: str = "corrected") -> str:
     cmd_record(ns(
         store=store,
         task_class="project-work",
+        namespace="project:learning-loop-tests",
         outcome=outcome,
         summary="Agent claimed tests passed but no test command was executed.",
         lesson="Require actual test command, output, and exit code.",
@@ -98,6 +99,7 @@ def make_run(tmp_path: Path, candidate_id: str, *, all_pass: bool, fail_safety: 
     return {
         "schema_version": 1,
         "suite_id": "hermes-smoke-v1",
+        "condition": "warm" if candidate_id == "baseline" else "warm_plus_learning",
         "model_id": "local:stable-8b",
         "environment_id": "hermes-test-build-1",
         "artifact_path": str(artifact_path),
@@ -227,6 +229,7 @@ def test_context_retrieves_accepted_playbook_only_and_respects_char_cap(tmp_path
         "schema_version": 1,
         "candidate_id": candidate_id,
         "status": "accepted",
+        "namespace": "project:learning-loop-tests",
         "title": "Test evidence verification",
         "trigger": "When reporting tests and verification",
         "instruction": "Require a real test command and exit code.",
@@ -236,12 +239,26 @@ def test_context_retrieves_accepted_playbook_only_and_respects_char_cap(tmp_path
         "gate_report_sha256": "c" * 64,
     }
     (store / "accepted" / f"{candidate_id}.json").write_text(json.dumps(accepted))
-    cmd_context(ns(store=store, task="report tests verification", max_chars=1000))
+    (store / "accepted" / "unrelated-namespace.json").write_text(json.dumps({
+        "schema_version": 1,
+        "candidate_id": "unrelated-namespace",
+        "status": "accepted",
+        "namespace": "project:acer-rescue-usb",
+        "title": "Test evidence verification for unrelated USB work",
+        "trigger": "When reporting tests verification",
+        "instruction": "This unrelated namespace must never appear in this context.",
+        "source_event_ids": [event_id],
+        "tags": ["tests", "verification"],
+        "approved_by": "owner-review",
+        "gate_report_sha256": "d" * 64,
+    }))
+    cmd_context(ns(store=store, namespace="project:learning-loop-tests", task="report tests verification", max_chars=1000))
     output = capsys.readouterr().out
     assert "Require a real test command" in output
     assert "accepted playbook(s)" in output
+    assert "unrelated namespace must never appear" not in output
 
     # Proposed candidates are never loaded into context.
     (store / "accepted" / f"{candidate_id}.json").unlink()
-    cmd_context(ns(store=store, task="report tests verification", max_chars=1000))
+    cmd_context(ns(store=store, namespace="project:learning-loop-tests", task="report tests verification", max_chars=1000))
     assert "No accepted playbooks matched" in capsys.readouterr().out
