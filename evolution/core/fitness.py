@@ -72,7 +72,7 @@ class LLMJudge:
     ) -> FitnessScore:
         """Score an agent output using LLM-as-judge."""
 
-        lm = dspy.LM(self.config.eval_model)
+        lm = self.config.make_lm(self.config.eval_model)
 
         with dspy.context(lm=lm):
             result = self.judge(
@@ -104,36 +104,73 @@ class LLMJudge:
         )
 
 
-def skill_fitness_metric(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
-    """DSPy-compatible metric function for skill optimization.
+def skill_fitness_metric(
+    example: dspy.Example,
+    prediction: dspy.Prediction,
+    trace=None,
+    pred_name=None,
+    pred_trace=None,
+) -> dspy.Prediction:
+    """Return a GEPA score plus actionable text feedback.
 
-    This is what gets passed to dspy.GEPA(metric=...).
-    Returns a float 0-1 score.
+    GEPA expects a metric that can accept (gold, pred, trace, pred_name,
+    pred_trace). The feedback is deliberately bounded and contains no hidden
+    conversation history; evaluation examples should already be sanitized.
+
+    This first version uses a deterministic keyword-coverage proxy. It is useful
+    for a low-cost smoke test, but it is NOT proof of semantic correctness.
+    Use a curated holdout set and human review before adopting a candidate.
     """
-    # The prediction should have an 'output' field with the agent's response
-    agent_output = getattr(prediction, "output", "") or ""
-    expected = getattr(example, "expected_behavior", "") or ""
-    task = getattr(example, "task_input", "") or ""
+    import re
+
+    agent_output = str(getattr(prediction, "output", "") or "")
+    expected = str(getattr(example, "expected_behavior", "") or "")
+    task = str(getattr(example, "task_input", "") or "")
 
     if not agent_output.strip():
-        return 0.0
+        return dspy.Prediction(
+            score=0.0,
+            feedback=(
+                "The candidate returned an empty response. It must produce a "
+                "non-empty result and address the expected behavior."
+            ),
+        )
 
-    # Quick heuristic scoring (for speed during optimization)
-    # Full LLM-as-judge scoring is expensive — use it selectively
-    score = 0.5  # Base score for non-empty output
+    stop_words = {
+        "the", "and", "for", "with", "that", "this", "from", "then", "must",
+        "should", "have", "has", "had", "was", "were", "are", "into", "when",
+        "what", "where", "which", "will", "your", "you", "use", "using",
+        "как", "что", "это", "для", "при", "если", "или", "его", "её",
+        "они", "она", "оно", "быть", "бы", "надо", "нужно", "должен",
+    }
 
-    # Check if key phrases from expected behavior appear
-    expected_lower = expected.lower()
-    output_lower = agent_output.lower()
+    def tokens(text: str) -> set[str]:
+        return {
+            token for token in re.findall(r"[a-zа-яё0-9_]+", text.lower())
+            if len(token) > 2 and token not in stop_words
+        }
 
-    # Simple keyword overlap as a fast proxy
-    expected_words = set(expected_lower.split())
-    output_words = set(output_lower.split())
-    if expected_words:
-        overlap = len(expected_words & output_words) / len(expected_words)
-        score = 0.3 + (0.7 * overlap)
+    expected_tokens = tokens(expected)
+    output_tokens = tokens(agent_output)
+    matched = expected_tokens & output_tokens
+    missing = sorted(expected_tokens - output_tokens)
+    coverage = len(matched) / max(1, len(expected_tokens))
+    score = min(1.0, max(0.0, 0.25 + 0.75 * coverage))
 
-    return min(1.0, max(0.0, score))
+    missing_preview = ", ".join(missing[:12]) if missing else "none detected"
+    feedback = (
+        "Evaluate the candidate against the rubric, not style alone.\n"
+        f"Task: {task[:500]}\n"
+        f"Expected behavior: {expected[:700]}\n"
+        f"Actual response: {agent_output[:1200]}\n"
+        f"Deterministic rubric-term coverage: {coverage:.0%}.\n"
+        f"Expected terms not seen (diagnostic only): {missing_preview}.\n"
+        "Improve the procedure so it meets the stated behavior without adding "
+        "unsupported claims or violating the task's safety constraints. "
+        "Keyword coverage is only a proxy; the holdout review remains mandatory."
+    )
+
+    return dspy.Prediction(score=score, feedback=feedback)
 
 
 def _parse_score(value) -> float:
