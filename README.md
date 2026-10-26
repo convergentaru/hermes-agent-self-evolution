@@ -88,6 +88,23 @@ Sources: [X post](https://x.com/akshay_pachaar/status/2054564519280804028) · [Y
 
 See [PLAN.md](PLAN.md) for the complete architecture, evaluation data strategy, constraints, benchmarks integration, and phased timeline.
 
+## Local Verified Learning Loop
+
+A local-first MVP to turn observed corrections and task outcomes into **proposed** playbooks, compare baseline vs. candidate results using paired receipts, reject safety/regression failures, and retrieve only explicitly approved learnings. It uses Python's standard library and stores data locally by default; it does not train model weights or automatically rewrite active Hermes skills.
+
+- [Russian implementation guide](docs/LOCAL-VERIFIED-LEARNING-LOOP-RU.md)
+- [Prompt for local Hermes integration](docs/HERMES-LEARNING-LOOP-INTEGRATION-PROMPT-RU.md)
+- CLI: `python -m evolution.learning.loop --help`
+- Tests: `tests/core/test_learning_loop.py`
+
+Current limitation: this is the evidence/store/gate layer, not yet an automatic importer of Hermes session history or an automatic runner of the active Hermes model. The integration prompt requires an audit of the installed Hermes version before wiring either path.
+
+### Practical Acer Rescue runbook
+
+- [Acer Rescue: USB, physical boot, Tailscale + SSH](docs/runbooks/ACER-RESCUE-USB-AND-SSH-RU.md) — current step-by-step operational runbook; if the USB has already been written, do not rewrite it by default.
+- [Prompt to sync into JetBrains, Obsidian, and GBrain](docs/HERMES-RUNBOOK-SYNC-PROMPT-RU.md) — local Hermes instructions to place the runbook in the project tree and Obsidian vault, update the existing indexes, verify checksums, and synchronize only the relevant files.
+- [Behavioral benchmark v1](benchmarks/hermes-learning-v1/README.md) — concrete pass/fail cases for honest execution evidence, USB safety, context troubleshooting, and measured learning.
+
 ## License
 
 MIT — © 2026 Nous Research
