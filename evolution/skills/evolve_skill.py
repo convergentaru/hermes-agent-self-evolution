@@ -146,13 +146,17 @@ def evolve(
 
     # ── 4. Set up DSPy + GEPA optimizer ─────────────────────────────────
     console.print(f"\n[bold]Configuring optimizer[/bold]")
-    console.print(f"  Optimizer: GEPA ({iterations} iterations)")
-    console.print(f"  Optimizer model: {optimizer_model}")
-    console.print(f"  Eval model: {eval_model}")
+    console.print(f"  Optimizer: GEPA (mandatory; max {max_metric_calls} metric calls)")
+    console.print(f"  Reflection model: {optimizer_model}")
+    console.print(f"  Evaluation model: {eval_model}")
+    console.print(f"  API base: {api_base or '(provider default)'}")
+    console.print(f"  Evaluation threads: {num_threads}")
 
-    # Configure DSPy
-    lm = dspy.LM(eval_model)
-    dspy.configure(lm=lm)
+    # GEPA's reflection LM and the candidate/evaluation LM are separate roles.
+    # num_threads defaults to 1: this avoids flooding a single-slot local server.
+    eval_lm = config.make_lm(eval_model)
+    reflection_lm = config.make_lm(optimizer_model)
+    dspy.configure(lm=eval_lm)
 
     # Create the baseline skill module
     baseline_module = SkillModule(skill["body"])
@@ -162,39 +166,46 @@ def evolve(
     valset = dataset.to_dspy_examples("val")
 
     # ── 5. Run GEPA optimization ────────────────────────────────────────
-    console.print(f"\n[bold cyan]Running GEPA optimization ({iterations} iterations)...[/bold cyan]\n")
+    console.print(
+        f"\n[bold cyan]Running mandatory GEPA optimization "
+        f"(budget: {max_metric_calls} metric calls)...[/bold cyan]\n"
+    )
 
     start_time = time.time()
+    gepa_log_dir = Path("output") / skill_name / (
+        "gepa-log-" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    )
 
     try:
         optimizer = dspy.GEPA(
             metric=skill_fitness_metric,
-            max_steps=iterations,
+            reflection_lm=reflection_lm,
+            max_metric_calls=max_metric_calls,
+            num_threads=max(1, num_threads),
+            log_dir=str(gepa_log_dir),
+            track_stats=True,
+            seed=0,
         )
-
         optimized_module = optimizer.compile(
             baseline_module,
             trainset=trainset,
             valset=valset,
         )
-    except Exception as e:
-        # Fall back to MIPROv2 if GEPA isn't available in this DSPy version
-        console.print(f"[yellow]GEPA not available ({e}), falling back to MIPROv2[/yellow]")
-        optimizer = dspy.MIPROv2(
-            metric=skill_fitness_metric,
-            auto="light",
+    except Exception as exc:
+        console.print(
+            "[bold red]GEPA failed. GEPA is mandatory for this project; "
+            "no fallback optimizer was run.[/bold red]"
         )
-        optimized_module = optimizer.compile(
-            baseline_module,
-            trainset=trainset,
-        )
+        console.print(f"Reason: {exc}")
+        raise
 
     elapsed = time.time() - start_time
-    console.print(f"\n  Optimization completed in {elapsed:.1f}s")
+    console.print(f"\n  GEPA completed in {elapsed:.1f}s")
 
-    # ── 6. Extract evolved skill text ───────────────────────────────────
-    # The optimized module's instructions contain the evolved skill text
-    evolved_body = optimized_module.skill_text
+    # GEPA evolves predictor instructions. Read the actual optimized instructions,
+    # not the wrapper's original skill_text attribute.
+    evolved_body = optimized_module.predictor.signature.instructions.strip()
+
     evolved_full = reassemble_skill(skill["frontmatter"], evolved_body)
 
     # ── 7. Validate evolved skill ───────────────────────────────────────
@@ -229,11 +240,11 @@ def evolve(
         with dspy.context(lm=lm):
             baseline_pred = baseline_module(task_input=ex.task_input)
             baseline_score = skill_fitness_metric(ex, baseline_pred)
-            baseline_scores.append(baseline_score)
+            baseline_scores.append(float(baseline_score.score))
 
             evolved_pred = optimized_module(task_input=ex.task_input)
             evolved_score = skill_fitness_metric(ex, evolved_pred)
-            evolved_scores.append(evolved_score)
+            evolved_scores.append(float(evolved_score.score))
 
     avg_baseline = sum(baseline_scores) / max(1, len(baseline_scores))
     avg_evolved = sum(evolved_scores) / max(1, len(evolved_scores))
@@ -260,7 +271,7 @@ def evolve(
         f"{len(evolved_body) - len(skill['body']):+,} chars",
     )
     table.add_row("Time", "", f"{elapsed:.1f}s", "")
-    table.add_row("Iterations", "", str(iterations), "")
+    table.add_row("Metric-call budget", "", str(max_metric_calls), "")
 
     console.print()
     console.print(table)
@@ -280,7 +291,7 @@ def evolve(
     metrics = {
         "skill_name": skill_name,
         "timestamp": timestamp,
-        "iterations": iterations,
+        "max_metric_calls": max_metric_calls,
         "optimizer_model": optimizer_model,
         "eval_model": eval_model,
         "baseline_score": avg_baseline,
@@ -308,20 +319,31 @@ def evolve(
 
 @click.command()
 @click.option("--skill", required=True, help="Name of the skill to evolve")
-@click.option("--iterations", default=10, help="Number of GEPA iterations")
+@click.option(
+    "--max-metric-calls",
+    "--iterations",
+    "max_metric_calls",
+    default=40,
+    show_default=True,
+    help="GEPA evaluation budget. --iterations is a legacy alias, not a step count.",
+)
 @click.option("--eval-source", default="synthetic", type=click.Choice(["synthetic", "golden", "sessiondb"]),
               help="Source for evaluation dataset")
 @click.option("--dataset-path", default=None, help="Path to existing eval dataset (JSONL)")
-@click.option("--optimizer-model", default="openai/gpt-4.1", help="Model for GEPA reflections")
-@click.option("--eval-model", default="openai/gpt-4.1-mini", help="Model for evaluations")
-@click.option("--hermes-repo", default=None, help="Path to hermes-agent repo")
-@click.option("--run-tests", is_flag=True, help="Run full pytest suite as constraint gate")
-@click.option("--dry-run", is_flag=True, help="Validate setup without running optimization")
-def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_model, hermes_repo, run_tests, dry_run):
-    """Evolve a Hermes Agent skill using DSPy + GEPA optimization."""
+@click.option("--optimizer-model", default="openai/gpt-4.1", help="Model used for GEPA reflection")
+@click.option("--eval-model", default="openai/gpt-4.1-mini", help="Model used to execute/evaluate candidates")
+@click.option("--api-base", default=None, help="Optional OpenAI-compatible base URL, e.g. local llama.cpp /v1")
+@click.option("--api-key-env", default="OPENAI_API_KEY", help="Environment variable containing the API key; never put keys on the command line")
+@click.option("--num-threads", default=1, type=click.IntRange(min=1), show_default=True,
+              help="Concurrent evaluation threads; leave at 1 for a single-slot local server")
+@click.option("--hermes-repo", default=None, help="Path containing the Hermes skills/ directory")
+@click.option("--run-tests", is_flag=True, help="Run the full Hermes test suite (verify this gate for your install)")
+@click.option("--dry-run", is_flag=True, help="Validate target and arguments without running optimization")
+def main(skill, max_metric_calls, eval_source, dataset_path, optimizer_model, eval_model, api_base, api_key_env, num_threads, hermes_repo, run_tests, dry_run):
+    """Evolve a Hermes Agent skill using mandatory DSPy + GEPA optimization."""
     evolve(
         skill_name=skill,
-        iterations=iterations,
+        max_metric_calls=max_metric_calls,
         eval_source=eval_source,
         dataset_path=dataset_path,
         optimizer_model=optimizer_model,
@@ -329,6 +351,9 @@ def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_mod
         hermes_repo=hermes_repo,
         run_tests=run_tests,
         dry_run=dry_run,
+        api_base=api_base,
+        api_key_env=api_key_env,
+        num_threads=num_threads,
     )
 
 
