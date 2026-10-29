@@ -779,3 +779,328 @@ See the **Constraints & Guardrails** section above for the full enforcement list
 
 4. What's the minimum viable first target?
    - Recommendation: Pick 2-3 well-used skills with clear success metrics (e.g., arxiv paper search, github-code-review, systematic-debugging)
+
+ 
+---
+
+# Research extension (2026-10-26): mandatory GEPA, native Hermes learning, RAG, and temporal memory
+
+This section extends the implementation plan with a version-aware design and a research map. It is not a claim that all components below have already been implemented. It separates what the current source tree does, what the project requires, and what remains a future phase.
+
+## 1. Three complementary loops, not one “magic memory”
+
+The system should contain three separate loops with explicit interfaces.
+
+### A. Online learning inside Hermes
+
+Purpose: capture a useful correction or reusable procedure during normal work.
+
+Inputs: user corrections, successful multi-step procedures, tool failures, repeated mistakes, and observed environment facts.
+
+Outputs:
+- a compact memory update for durable facts;
+- a skill change for a repeatable procedure;
+- an incident/episode record retaining provenance;
+- optionally a regression-test example.
+
+This loop is an online reflective curator. It may make a mistake, and a saved memory is not proof that future behaviour improves. Control memory and skill writes using approval gates when supported. Keep the distinction between observed fact, hypothesis, and user preference.
+
+Current upstream references:
+- https://hermes-agent.nousresearch.com/docs/user-guide/features/memory
+- https://hermes-agent.nousresearch.com/docs/user-guide/features/skills
+- https://github.com/NousResearch/hermes-agent/blob/main/agent/background_review.py
+
+The local report previously identified Hermes Agent v0.22.2 and concluded that skill_manage/background review were absent. That conclusion must be rechecked against the actual installed tool schema and CLI; an empty skills list is not proof that a tool is missing. Newer upstream documentation cannot automatically be treated as feature parity with the installed build.
+
+### B. Offline optimization with GEPA
+
+Purpose: search for a measurably better instruction under a fixed evaluation protocol.
+
+Inputs: immutable baseline artifact, labelled evaluation examples, execution traces, and a metric that returns both a score and an actionable feedback string.
+
+Outputs: candidate instructions, GEPA trace/log, baseline-versus-candidate scorecard, constraint results, and a human-reviewable diff.
+
+This loop should not write directly into the live skill. It must be reproducible and gated. GEPA is mandatory for this project's evolutionary prompt/skill optimization. If the GEPA API is unavailable or fails, stop and report the reason; never report a MIPROv2 fallback as a GEPA run.
+
+### C. Retrieval and temporal memory
+
+Purpose: find relevant prior evidence without injecting an entire transcript archive into each prompt.
+
+Inputs: documents, project state reports, explicit facts, prior episodes, and correction events.
+
+Outputs: a small, relevant evidence bundle with source links, temporal status, and uncertainty.
+
+RAG does not optimize the skill. GEPA does not replace long-term retrieval. Hermes MEMORY.md should not become the entire event database. Keep these stores separate and connect them through explicit source IDs.
+
+## 2. GEPA: required algorithm and interface
+
+### 2.1 Research basis
+
+GEPA (Genetic-Pareto Prompt Evolution) treats natural language as a useful optimization surface. It records rollouts/traces, reflects on why a candidate did or did not satisfy a rubric, proposes targeted instruction updates, evaluates the candidate, and tracks a Pareto frontier of promising variants.
+
+The paper “GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning” (arXiv:2507.19457, ICLR 2026) reports its results on specific benchmarks: average improvement over GRPO and up to 35× fewer rollouts in the reported settings. These results motivate the method but are not a guarantee for an 8B local model, a new metric, or an arbitrary workflow.
+
+Sources:
+- Paper: https://arxiv.org/abs/2507.19457
+- ICLR 2026 publication page: https://proceedings.iclr.cc/paper_files/paper/2026/hash/0e9e708b6f48e14fd0ac29e167413f76-Abstract-Conference.html
+- Implementation: https://github.com/gepa-ai/gepa
+- DSPy GEPA API: https://dspy.ai/3.4.1/diving-deeper/gepa-in-depth/
+
+### 2.2 GEPA is mandatory, not a preferred option
+
+Repository policy:
+1. Use DSPy GEPA for evolutionary instruction optimization.
+2. Pin and record a tested DSPy/GEPA dependency combination; do not rely on an open-ended version range without CI coverage.
+3. Call the installed API by its real documented interface. Current documentation describes budgets such as max_metric_calls or max_full_evals, and a reflection_lm; it does not justify assuming a max_steps parameter exists.
+4. If GEPA import, initialization, compilation, or evaluation fails, stop. Preserve the stack/error and report GEPA_FAILED.
+5. Never silently change optimizers, model providers, or dataset source to make a run appear successful.
+6. Store exact versions, budget, seed, endpoint identity (without secrets), and the reason for stopping.
+
+### 2.3 The metric is part of the algorithm
+
+Use a metric signature compatible with the installed DSPy version. Current GEPA documentation exposes the gold example, prediction, optional trace, predictor name, and predictor trace. The metric can return a structured prediction containing score and textual feedback. Verify the exact installed signature before coding.
+
+Example conceptual output:
+- score: 0.0–1.0, derived from an explicit rubric and observable checks;
+- feedback: a short diagnosis of the failed criterion and a useful correction;
+- optional objective scores: independently measured objectives when multi-objective selection is intentionally enabled.
+
+Avoid:
+- a score based only on keyword overlap;
+- asking the same weak model to grade itself without a fixed rubric;
+- a feedback string that simply repeats the numeric score;
+- changing the rubric after candidate results are seen;
+- mixing holdout examples into GEPA's reflection/optimization data.
+
+For skills that perform actions, score observable behaviour: command actually executed, exit code captured, evidence interpreted correctly, forbidden action avoided, and final report honest. For purely textual skills, use an explicit rubric plus human review.
+
+### 2.4 Code audit findings in the current main branch
+
+Before any real optimization, address these verified implementation risks:
+
+1. **Cloud defaults:** evolve_skill.py defaults to OpenAI model names, and the original config does not offer a user-facing api_base. The current implementation does not yet establish that all GEPA, dataset-generation, evaluation, and session-import calls can use only the existing local llama.cpp server.
+2. **Unverified GEPA argument:** the original optimizer call uses max_steps. Current DSPy GEPA documentation names budgets such as max_metric_calls/max_full_evals. Test the exact installed signature.
+3. **Forbidden fallback:** original code catches GEPA errors and silently runs MIPROv2. Remove this fallback; a GEPA failure is a failed run.
+4. **Potential non-optimizable skill text:** original SkillModule exposes the skill body as an ordinary model input field. GEPA typically optimizes predictor instructions. The implementation must place the target text into the predictor's actual instruction parameter and extract that exact evolved instruction from the compiled result. Add a unit test proving that the output candidate differs from the baseline when a deliberately simple test case asks for a known instruction change.
+5. **Weak fitness signal:** original skill_fitness_metric is a keyword-overlap heuristic returning a scalar. LLMJudge exists but the main metric does not use its explanatory feedback. Replace or augment this with deterministic rubric checks plus bounded natural-language feedback; explicitly label any heuristic-only test as a smoke test, not proof.
+6. **Test gate:** the run-tests flag must call the test runner with the active Python 3 interpreter and must prevent acceptance if tests fail. Merely printing a test option is not a gate.
+7. **Artifact integrity:** the complete SKILL.md frontmatter, name, description, and metadata must be preserved. Validate the complete candidate file, not only the Markdown body.
+8. **Holdout integrity:** do not use holdout examples for GEPA mutation, reflection, threshold tuning, or rubric editing. Score baseline and candidate on the same frozen holdout.
+9. **Result persistence:** save baseline, candidate, metrics JSON, GEPA logs, test results, dependency versions, and a concise report in a timestamped output directory.
+10. **No unattended replacement:** candidates remain separate until a human reviews the diff and evidence.
+
+These are code-review tasks, not evidence that the source has already been fixed or that the local pipeline is ready.
+
+## 3. Local llama.cpp support: keep the current model, but constrain the workload
+
+GEPA does not require GPU weight training. DSPy can use an OpenAI-compatible model endpoint, which makes the current llama.cpp server a possible backend. That capability does not mean the current code is already configured for it.
+
+Target requirements:
+- Explicit endpoint configuration, not guessed host/port values.
+- Explicit model ID observed from the server's /v1/models response.
+- No implicit OpenAI/cloud fallback when the local server is down.
+- No API key or token printed in logs; for no-auth local endpoints, use only the harmless placeholder required by the client library.
+- A distinct role setting for candidate/evaluation generation and GEPA reflection. Initially these may use the same local model.
+- num_threads=1 and a low GEPA metric-call budget for the first run on a single-slot server.
+- One active model workload at a time until concurrent throughput and context allocation are measured.
+- Small evaluation inputs and bounded feedback; do not replay a 60K-token agent history for every candidate.
+- A hard stop if requests are rejected due to context, malformed outputs, or timeouts. Do not retry indefinitely or change model/runtime settings automatically.
+
+A small local model may execute the evaluator and reflection loop, but reflection quality can be weaker than a stronger evaluator. This should be measured as a limitation, not hidden with an external API call. No cloud service should be used for traces unless explicitly approved.
+
+### A useful staged experiment
+
+1. Validate dependencies and the local endpoint without generating candidate responses.
+2. Run a dry run that reads and validates one target skill, baseline hash, and dataset.
+3. Run baseline evaluation alone.
+4. Run GEPA with a small budget and one thread.
+5. Score baseline and candidate on the frozen holdout.
+6. Repeat baseline/candidate measurements when generation is stochastic and compare variance.
+7. Compare quality, latency, request count, context errors, and privacy implications.
+8. Stop and save a failure report if the local model cannot produce usable feedback or structured output.
+
+Do not estimate cost as zero merely because the model is local: API billing may be absent, but latency, electricity, GPU contention, and engineering time remain costs.
+
+## 4. Data and evaluation protocol
+
+### 4.1 Dataset record
+
+A useful evaluation example should contain:
+- stable example ID;
+- task input;
+- expected observable behaviour, not just a suggested answer;
+- rubric/checklist;
+- category and difficulty;
+- source type (synthetic, hand-written/golden, or redacted episode);
+- source/provenance pointer when safe;
+- expected safety boundary;
+- whether it is train, validation, or holdout.
+
+For action-based tasks include expected tools or evidence and prohibited side effects. The task runner must not perform real destructive actions to generate a score.
+
+### 4.2 Dataset sources
+
+- **Hand-written golden set:** best for the first small pilot because a human defines expected behaviour.
+- **Synthetic tasks:** useful for breadth, but examples and expected answers need review; synthetic data can repeat the same model's blind spots.
+- **Real session traces:** valuable for learning from actual failures, but they can contain secrets, personal information, private files, browser contents, and accidental tool instructions. Redact and locally filter before any model sees them.
+- **GBrain/archival retrieval:** can locate prior knowledge or episodes; it is not automatically a correctly labelled GEPA dataset.
+- **Hermes session importer:** verify which local files it reads and whether content is sent to the configured inference endpoint before using it.
+
+Recommended first pilot: 10–20 carefully reviewed examples, five or more distinct failure modes, a separate holdout, and an explicit note that this is a pilot rather than a statistically conclusive benchmark.
+
+### 4.3 Separate learning from evaluation
+
+Freeze the evaluation set and scoring rules before optimization. Keep the holdout hidden from reflection and candidate selection. If a candidate fails, do not adjust the rubric merely to improve its score; record the failure, update the train/validation data if justified, and create a new evaluation version.
+
+At minimum report:
+- baseline and candidate score;
+- per-case successes and failure categories;
+- hard safety violations;
+- size and structural constraints;
+- model/API calls, latency, context errors;
+- confidence limitations and human review decision.
+
+## 5. RAG and time-aware memory architecture
+
+### 5.1 Why classic RAG is not enough
+
+Vector retrieval finds semantically similar passages. It may return an old state, an assumption later corrected, or several contradictory statements. Time-sensitive questions need dates, source lineage, current validity, and a way to preserve history.
+
+Every memory/episode record should use the fields that are known and relevant:
+- id, project, entity;
+- fact/event text;
+- event_time (when the described thing happened);
+- recorded_at (when the system learned it);
+- valid_from and valid_until (when the fact is believed to hold);
+- source_uri, source file or session ID;
+- status: current, superseded, disproven, resolved, or unknown;
+- supersedes: prior record ID when a correction arrives;
+- confidence and verification state;
+- visibility and sensitivity tags.
+
+Never invent unknown timestamps. A statement such as “I expect this to work” is not the same as a test result. Corrections should supersede old claims while preserving their historic record and provenance.
+
+### 5.2 Retrieval pipeline
+
+1. Classify the time intent: current, historical, future plan, or cause of an old failure.
+2. Apply project, permission, and date filters.
+3. Search exact identifiers and errors using full-text/BM25.
+4. Add semantic retrieval when paraphrase matching is needed.
+5. Add graph traversal for relations between people, components, and decisions if it answers a measured gap.
+6. Fuse, deduplicate, rerank by relevance and temporal validity.
+7. Feed only a bounded evidence set to the model.
+8. Return provenance and distinguish current facts, old facts, and unknowns.
+
+A local-first MVP can start with Markdown plus SQLite FTS5 and timestamped JSON/SQLite rows. Embeddings can be a later optional improvement; a graph database is a later tier, not a day-one dependency.
+
+### 5.3 Relationship between Hermes, RAG, GBrain, and GEPA
+
+| Layer | Primary job | What belongs there |
+|---|---|---|
+| Hermes current context | Complete this turn | Current request and relevant local evidence |
+| Hermes MEMORY.md / USER.md | Keep compact durable context | Preferences and key verified facts |
+| Hermes skills | Reuse a workflow | Step-by-step procedures and pitfalls |
+| Session history / episode store | Preserve the audit trail | Events, commands, errors, outcomes, timestamps |
+| RAG index | Locate evidence | Documents, reports, source-linked facts |
+| GBrain | Portable/shared knowledge and retrieval | Facts/knowledge useful across authorised agents |
+| GEPA | Improve procedure against evaluations | Candidate skill/instruction variants and measured results |
+| Evaluation dataset | Prevent self-deception | Frozen tasks, rubrics and holdout cases |
+
+Do not make GBrain a dumping ground for raw transcripts. Do not assume installing a memory database automatically creates temporal reasoning. Do not use GEPA as a substitute for a source-of-truth index.
+
+## 6. Related systems and evidence map
+
+This project should study existing systems for specific capabilities, not install them all.
+
+| Project/research | Relevant idea | How we should use it | Caution |
+|---|---|---|---|
+| [GEPA paper](https://arxiv.org/abs/2507.19457) and [gepa-ai/gepa](https://github.com/gepa-ai/gepa) | Reflective prompt evolution with Pareto candidate tracking | Mandatory offline optimizer | Results depend on task and metric |
+| [DSPy GEPA docs](https://dspy.ai/3.4.1/diving-deeper/gepa-in-depth/) | API contract, score + feedback, evaluation budgets | Source of truth for the implementation API | Pin the actually tested version |
+| [Hermes memory/skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) | Built-in persistence and post-turn review | Use the existing learning loop before inventing another one | Check local version and local-runtime scheduling |
+| [GBrain](https://github.com/convergentaru/gbrain) | Portable memory and knowledge across agents | Retrieve relevant source-linked prior facts | Not a prompt optimizer; background enrichment may have extra resource/API requirements |
+| [Graphiti](https://github.com/getzep/graphiti) | Temporal context graph and hybrid retrieval | Later comparison if time/relationship questions fail with FTS | Database and structured extraction add complexity; weak models may struggle with schema output |
+| [Zep temporal memory paper](https://arxiv.org/abs/2501.13956) | Time-aware relationships and historical memory | Architecture reference | Paper benchmarks are not a direct comparison against this project |
+| [Mem0](https://github.com/mem0ai/mem0) | Fact extraction, entity links, temporal retrieval | Compare as a memory layer if needed | Managed-platform metrics may not match local open-source results |
+| [Temporal GraphRAG](https://arxiv.org/abs/2510.13590) | Time hierarchy and incremental temporal graph updates | Explore if incremental archives grow large | Research implementation is not the simplest MVP |
+| [Reddit: GEPA on a Pi](https://www.reddit.com/r/LocalLLaMA/comments/1ozkkzz/dspy_on_a_pi_cheap_prompt_optimization_with_gepa/) | Community report of local prompt optimisation | Inspiration for a controlled local experiment | Anecdote; hardware, model, and task differ |
+| [Reddit: memory systems survey](https://www.reddit.com/r/LocalLLaMA/comments/1r8cnwq/analyzed_8_agent_memory_systems_endtoend_heres/) | Practical comparisons of retrieval strategies | Build evaluation cases | Personal survey, not an independent benchmark |
+| [Reddit: self-improvement evaluation](https://www.reddit.com/r/AI_Agents/comments/1slqhzu/are_there_any_benchmarks_for_selfimproving_agents/) | Memory and self-improvement are not the same metric | Require regression suites and repeatable tasks | Discussion, not proof that no useful benchmark exists |
+
+## 7. Phased implementation plan
+
+### Phase 0 — Preserve and inspect
+- Record versions and runtime endpoint.
+- Hash the current skill, configuration and relevant dependencies.
+- Verify voice I/O, local model access and the read-only safety path.
+- Inventory actual Hermes memory and skill tools.
+- Do not start another model workload while the local server is occupied.
+
+### Phase 1 — Native Hermes loop
+- Verify memory, skill-management, session-search and review support in the installed version.
+- Inspect whether background review runs on the same local endpoint and how it is scheduled.
+- Initially use review gates/approval where supported.
+- Create one verified learning example and confirm it is recalled by a new session.
+
+### Phase 2 — Temporal episode retrieval
+- Define an event schema and provenance.
+- Index local reports/session summaries using SQLite FTS5.
+- Test “current state” against “historical state” and ensure superseded facts are not returned as current.
+- Add embeddings only if exact/keyword retrieval is insufficient.
+
+### Phase 3 — Evaluation harness correctness
+- Confirm DSPy/GEPA versions and real API signatures.
+- Fix the skill module so its target instruction is truly optimized.
+- Implement a feedback-aware metric and a hard GEPA failure path.
+- Add unit tests for instruction mutation, full SKILL.md round trip, budget handling, and failure gates.
+- Verify that api_base routes all intended requests to llama.cpp without cloud fallback.
+
+### Phase 4 — One GEPA pilot
+- Choose a low-risk text-only procedure with observable criteria.
+- Create a hand-reviewed dataset and frozen holdout.
+- Run baseline, GEPA with a small budget and one thread, and holdout evaluation.
+- Archive all candidates and metrics.
+- Reject if no measured improvement or any critical regression occurs.
+
+### Phase 5 — Controlled adoption
+- Human reviews the candidate diff and evidence.
+- Adopt only as a separate approved version/branch.
+- Keep rollback path to the immutable baseline.
+- Add each confirmed failure as a regression case.
+- Repeat the pilot on one additional skill before broadening to tools/prompts.
+
+### Phase 6 — Optional wider evolution
+Only after Phase 5 succeeds should the project consider optimizing tool descriptions, prompt sections, or helper code. Code evolution is higher risk than skill-text evolution and needs dedicated tests, sandboxing, and human review.
+
+## 8. Definition of done
+
+A pilot is complete only if:
+- the actual GEPA optimizer ran and no fallback was used;
+- baseline and candidate are saved with hashes;
+- model, endpoint, dependencies, budget and logs are recorded;
+- the metric includes diagnostic feedback;
+- holdout is independent and immutable during the run;
+- baseline/candidate are compared on the same frozen cases;
+- tests, safety gates and artifact structure pass;
+- the report shows actual failures as well as improvements;
+- the live skill was not replaced automatically;
+- a human explicitly accepts or rejects the candidate.
+
+## 9. Source list
+
+- Akshay Pachaar X post: https://x.com/akshay_pachaar/status/2054564519280804028
+- Hermes Agent Crash Course: https://www.youtube.com/watch?v=bNp6YcKBLgY
+- GEPA paper: https://arxiv.org/abs/2507.19457
+- ICLR 2026 page: https://proceedings.iclr.cc/paper_files/paper/2026/hash/0e9e708b6f48e14fd0ac29e167413f76-Abstract-Conference.html
+- GEPA code: https://github.com/gepa-ai/gepa
+- DSPy GEPA docs: https://dspy.ai/3.4.1/diving-deeper/gepa-in-depth/
+- Hermes memory: https://hermes-agent.nousresearch.com/docs/user-guide/features/memory
+- Hermes skills: https://hermes-agent.nousresearch.com/docs/user-guide/features/skills
+- Hermes background review source: https://github.com/NousResearch/hermes-agent/blob/main/agent/background_review.py
+- GBrain: https://github.com/convergentaru/gbrain
+- Graphiti: https://github.com/getzep/graphiti
+- Zep paper: https://arxiv.org/abs/2501.13956
+- Mem0: https://github.com/mem0ai/mem0
+- Temporal GraphRAG: https://arxiv.org/abs/2510.13590
+- Reddit: https://www.reddit.com/r/LocalLLaMA/comments/1ozkkzz/dspy_on_a_pi_cheap_prompt_optimization_with_gepa/
+- Reddit: https://www.reddit.com/r/LocalLLaMA/comments/1r8cnwq/analyzed_8_agent_memory_systems_endtoend_heres/
+- Reddit: https://www.reddit.com/r/AI_Agents/comments/1slqhzu/are_there_any_benchmarks_for_selfimproving_agents/
